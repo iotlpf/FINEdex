@@ -1,13 +1,16 @@
 #include <iostream>
 #include "include/function.h"
-#include "include/aidel.h"
-#include "include/aidel_impl.h"
+/*#include "include/aidel.h"
+#include "include/aidel_impl.h"*/
+#include "include/finedex.h"
+#include "include/finedex_impl.h"
 
 struct alignas(CACHELINE_SIZE) ThreadParam;
 
 
 typedef ThreadParam thread_param_t;
-typedef aidel::AIDEL<key_type, val_type> aidel_type;
+//typedef aidel::AIDEL<key_type, val_type> aidel_type;
+typedef aidel::FINEdex<key_type, val_type> aidel_type;
 
 volatile bool running = false;
 std::atomic<size_t> ready_threads(0);
