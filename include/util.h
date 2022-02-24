@@ -119,7 +119,9 @@ static int binary_search_simple(const int *arr, int n, int key) {
   return (int) right;
 }
 
-static int binary_search_branchless(const int *arr, int n, int key) {
+template<typename KEY_TYPE>
+static int binary_search_branchless(const KEY_TYPE *arr, int n, KEY_TYPE key) {
+//static int binary_search_branchless(const int *arr, int n, int key) {
   intptr_t pos = -1;
   intptr_t logstep = bsr(n - 1);
   intptr_t step = intptr_t(1) << logstep;
@@ -136,7 +138,7 @@ static int binary_search_branchless(const int *arr, int n, int key) {
   return (int) (arr[pos] >= key ? pos : n);
 }
 
-static int binary_search_branchless(const int64_t *arr, int n, int64_t key) {
+/*static int binary_search_branchless(const int64_t *arr, int n, int64_t key) {
   intptr_t pos = -1;
   intptr_t logstep = bsr(n - 1);
   intptr_t step = intptr_t(1) << logstep;
@@ -151,7 +153,7 @@ static int binary_search_branchless(const int64_t *arr, int n, int64_t key) {
   pos += 1;
 
   return (int) (arr[pos] >= key ? pos : n);
-}
+}*/
 
 static uint32_t interpolation_search( const int32_t* data, uint32_t n, int32_t key ) {
   uint32_t low = 0;

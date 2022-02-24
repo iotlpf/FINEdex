@@ -1,7 +1,7 @@
 #include "util.h"
 
-typedef int64_t key_type;
-typedef int64_t val_type;
+typedef uint64_t key_type;
+typedef uint64_t val_type;
 
 std::vector<key_type> exist_keys;
 std::vector<key_type> non_exist_keys;
@@ -19,8 +19,10 @@ void skew_data();
 void load_ycsb(const char *path);
 void run_ycsb(const char *path);
 std::vector<int> read_data(const char *path);
-std::vector<int64_t> read_timestamp(const char *path);
-std::vector<int64_t> read_document(const char *path);
+template<typename key_type>
+std::vector<key_type> read_timestamp(const char *path);
+template<typename key_type>
+std::vector<key_type> read_document(const char *path);
 
 typedef struct operation_item {
     key_type key;
@@ -223,7 +225,7 @@ void uniform_data(){
     if (Config.insert_ratio > 0) {
         non_exist_keys.reserve(Config.item_num);
         for (size_t i = 0; i < Config.item_num; ++i) {
-            int64_t a = rand_uniform(gen);
+            key_type a = rand_uniform(gen);
             non_exist_keys.push_back(a);
         }
     }
@@ -235,7 +237,7 @@ void normal_data(){
 
     exist_keys.reserve(Config.exist_num);
     for (size_t i = 0; i < Config.exist_num; ++i) {
-        int64_t a = rand_normal(gen)*1000000000000;
+        key_type a = rand_normal(gen)*1000000000000;
         if(a<0) {
             i--;
             continue;
@@ -245,7 +247,7 @@ void normal_data(){
     if (Config.insert_ratio > 0) {
         non_exist_keys.reserve(Config.item_num);
         for (size_t i = 0; i < Config.item_num; ++i) {
-            int64_t a = rand_normal(gen)*1000000000000;
+            key_type a = rand_normal(gen)*1000000000000;
             if(a<0) {
                 i--;
                 continue;
@@ -261,14 +263,14 @@ void lognormal_data(){
 
     exist_keys.reserve(Config.exist_num);
     for (size_t i = 0; i < Config.exist_num; ++i) {
-        int64_t a = rand_lognormal(gen)*1000000000000;
+        key_type a = rand_lognormal(gen)*1000000000000;
         assert(a>0);
         exist_keys.push_back(a);
     }
     if (Config.insert_ratio > 0) {
         non_exist_keys.reserve(Config.item_num);
         for (size_t i = 0; i < Config.item_num; ++i) {
-            int64_t a = rand_lognormal(gen)*1000000000000;
+            key_type a = rand_lognormal(gen)*1000000000000;
             assert(a>0);
             non_exist_keys.push_back(a);
         }
@@ -276,7 +278,8 @@ void lognormal_data(){
 }
 void timestamp_data(){
     //assert(Config.read_ratio == 1);
-    std::vector<int64_t> read_keys = read_timestamp("../FINEdex2/workloads/timestamp.sorted.200M");
+    //std::vector<key_type> read_keys = read_timestamp<key_type>("../FINEdex2/workloads/timestamp.sorted.200M");
+    std::vector<key_type> read_keys = read_timestamp<key_type>("osm/osm_cellids_800M_uint64");
     size_t size = read_keys.size();
     
     std::random_device rd;
@@ -305,7 +308,7 @@ void timestamp_data(){
 }
 void documentid_data(){
     //assert(Config.read_ratio == 1);
-    std::vector<int64_t> read_keys = read_timestamp("../FINEdex2/workloads/document-id.sorted.10M");
+    std::vector<key_type> read_keys = read_timestamp<key_type>("../FINEdex2/workloads/document-id.sorted.10M");
     size_t size = read_keys.size();
 
     std::random_device rd;
@@ -340,7 +343,7 @@ void lognormal_data_with_insert_factor(){
     COUT_THIS("[gen_data] insert_factor: " <<Config.insert_factor);
     exist_keys.reserve(Config.exist_num);
     for (size_t i = 0; i < Config.exist_num; ++i) {
-        int64_t a = rand_lognormal(gen)*1000000000000;
+        key_type a = rand_lognormal(gen)*1000000000000;
         if(a<0) {
             i--;
             continue;
@@ -351,7 +354,7 @@ void lognormal_data_with_insert_factor(){
     int insert_num = Config.item_num*Config.insert_factor;
     non_exist_keys.reserve(insert_num);
     for (size_t i = 0; i < insert_num; ++i) {
-        int64_t a = rand_lognormal(gen)*1000000000000;
+        key_type a = rand_lognormal(gen)*1000000000000;
         if(a<0) {
             i--;
             continue;
@@ -499,12 +502,13 @@ std::vector<int> read_data(const char *path) {
     return vec;
 }
 
-std::vector<int64_t> read_timestamp(const char *path) {
-    std::vector<int64_t> vec;
+template<typename key_type>
+std::vector<key_type> read_timestamp(const char *path) {
+    std::vector<key_type> vec;
     FILE *fin = fopen(path, "rb");
-    int64_t buf[BUF_SIZE];
+    key_type buf[BUF_SIZE];
     while (true) {
-        size_t num_read = fread(buf, sizeof(int64_t), BUF_SIZE, fin);
+        size_t num_read = fread(buf, sizeof(key_type), BUF_SIZE, fin);
         for (int i = 0; i < num_read; i++) {
             vec.push_back(buf[i]);
         }
@@ -514,15 +518,16 @@ std::vector<int64_t> read_timestamp(const char *path) {
     return vec;
 }
 
-std::vector<int64_t> read_document(const char *path){
-    std::vector<int64_t> vec;
+template<typename key_type>
+std::vector<key_type> read_document(const char *path){
+    std::vector<key_type> vec;
     std::ifstream fin(path);
     if(!fin){
         std::cout << "Erro message: " << strerror(errno) << std::endl;
         exit(0);
     }
 
-    int64_t a;
+    key_type a;
     char buffer[50];
     while(!fin.eof()){
       fin.getline(buffer, 50);
