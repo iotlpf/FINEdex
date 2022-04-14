@@ -19,6 +19,7 @@ class LinearRegressionModel{
     auto pos = int64_t(slope * k) + intercept;
     auto lo = SUB_EPS(pos, Epsilon);
     auto hi = ADD_EPS(pos, Epsilon, size);
+    lo = lo>hi? hi:lo;
     return {static_cast<size_t>(ceil(pos)), static_cast<size_t>(ceil(lo)), static_cast<size_t>(ceil(hi))};
   }
 

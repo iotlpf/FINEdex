@@ -4,6 +4,7 @@
 #include "level_bin.h"
 #include "lr_model.h"
 #include "util.h"
+#include "plr.hpp"
 
 namespace finedex{
 
@@ -13,26 +14,10 @@ public:
     typedef LinearRegressionModel<key_t> lrmodel_type;
     typedef LevelBin<key_t, val_t> levelbin_type;
     typedef FineModel<key_t, val_t> finemodel_type;
+    typedef PLR<key_t, size_t> OptimalPLR;
 
-    typedef struct model_or_bin {
-        typedef union pointer{
-            levelbin_type* lb;
-            finemodel_type* ai;
-        }pointer_t;
-        pointer_t mob;
-        bool volatile isbin = true;   // true = lb, false = ai
-        volatile uint8_t locked = 0;
-
-        void lock(){
-            uint8_t unlocked = 0, locked = 1;
-            while (unlikely(cmpxchgb((uint8_t *)&this->locked, unlocked, locked) !=
-                            unlocked))
-              ;
-        }
-        void unlock(){
-            locked = 0;
-        }
-    }model_or_bin_t;
+    class Model_or_bin;
+    using model_or_bin_t = class Model_or_bin;
 
 private:
     lrmodel_type* model = nullptr;
@@ -42,13 +27,13 @@ private:
     model_or_bin_t** mobs = nullptr;
     const size_t capacity;
 
-    size_t maxErr=32;
+    size_t Epsilon=32;
 
 public:
     explicit FineModel(double slope, double intercept, size_t epsilon,
                        const typename std::vector<key_t>::const_iterator &keys_begin,
                        const typename std::vector<val_t>::const_iterator &vals_begin, 
-                       size_t size) : capacity(size), maxErr(epsilon)
+                       size_t size) : capacity(size), Epsilon(epsilon)
     {
         model=new lrmodel_type(slope, intercept, epsilon);
         keys = (key_t *)malloc(sizeof(key_t)*size);
@@ -74,21 +59,11 @@ public:
     void print() {
         LOG(4)<<"[print finemodel] capacity:"<<capacity<<" -->";
         model->print();
-        if(mobs[0]) {
-            if(mobs[0]->isbin){
-                mobs[0]->mob.lb->print(std::cout);
-            }else {
-                mobs[0]->mob.ai->print();
-            }
-        }
+        if(mobs[0]) mobs[0]->print();
         for(size_t i=0; i<capacity; i++){
             std::cout<<"keys["<<i<<"]: " <<keys[i] << std::endl;
             if(mobs[i+1]) {
-                if(mobs[i+1]->isbin){
-                    mobs[i+1]->mob.lb->print(std::cout);
-                }else {
-                    mobs[i+1]->mob.ai->print();
-                }
+                mobs[i+1]->print();
             }
         }
     }
@@ -103,36 +78,32 @@ public:
             }
             return result_t::failed;
         }
-        int bin_pos = pos;
 
         memory_fence();
-        model_or_bin_t* mob = mobs[bin_pos];
-        if(mob==nullptr) return result_t::failed;
-    
-        result_t res = result_t::failed;
-        mob->lock();
-        if(mob->isbin){
-            res = mob->mob.lb->find(key, val);
-        } else{
-            res = mob->mob.ai->find(key, val);
-        }
-        assert(res!=result_t::retrain);
-        mob->unlock();
-        return res;
+        if(mobs[pos]==nullptr) return result_t::failed;
+        return mobs[pos]->find(key, val);
     }
 
     bool find_array(const key_t &key, size_t &pos) {
         auto [pre, lo, hi] = this->model->predict(key, capacity);
-        assert(lo<capacity && hi-lo>=0);
-        pos = binary_search_branchless(keys+lo, hi-lo, key) + lo;
-        if(keys[pos]!=key) return false;
-        return true; 
+        if(lo==hi) pos = lo;
+        else pos = binary_search_branchless(keys+lo, hi-lo+1, key) + lo;
+        if(pos>=capacity) {
+            pos=capacity-1;
+            return false;
+        }
+        if(keys[pos]==key) return true;
+        pos = pos==capacity-1? ++pos:pos;
+        return false; 
     }
+
 
     result_t find_debug(const key_t &key)
     {
         auto [pre, lo, hi] = this->model->predict(key, capacity);
-        auto pos = binary_search_branchless(keys+lo, hi-lo, key);
+        size_t pos;
+        if(lo==hi) pos = lo;
+        else pos = binary_search_branchless(keys+lo, hi-lo, key) + lo;
         LOG(5) <<"key: "<<key <<", [pre, lo, hi, pos]: "<<pre<<", "<<lo<<", "<<hi<<", "<<pos;
         return result_t::ok;
     }
@@ -148,17 +119,9 @@ public:
                 LOG(5)<<"[fineModel error] i: "<< i<< ", key: "<<keys[i]<<" , [pre, lo, hi]: "<<pre<<", "<<lo<<", "<<hi;  
                 exit(0);         
             }
-            //assert(keys[i]==dummy_val);
         }
         for(size_t i=0; i<=capacity; i++){
-            model_or_bin_t *mob = mobs[i];
-            if(mob){
-                if(mob->isbin){
-                    mob->mob.lb->self_check();
-                } else {
-                    mob->mob.ai->self_check();
-                }
-            }
+            if(mobs[i]) mobs[i]->self_check();
         }
     }
 
@@ -173,21 +136,9 @@ public:
             }
             return result_t::failed;
         }
-        int bin_pos=pos;
         memory_fence();
-        model_or_bin_t* mob = mobs[bin_pos];
-        if(mob==nullptr) return result_t::failed;
-    
-        result_t res = result_t::failed;
-        mob->lock();
-        if(mob->isbin){
-            res = mob->mob.lb->update(key, val);
-        } else{
-            res = mob->mob.ai->update(key, val);
-        }
-        assert(res!=result_t::retrain);
-        mob->unlock();
-        return res;
+        if(mobs[pos]==nullptr) return result_t::failed;
+        return mobs[pos]->update(key, val);
     }
 
     // =============================== insert =======================
@@ -203,7 +154,14 @@ public:
                 return result_t::ok;
             }
         }
-        return insert_model_or_bin(key, val, pos);
+        //insert into model or bin
+        //LOG(5)<<"insert key: "<<key<<" into bin: "<<pos;
+        if(mobs[pos]==nullptr){
+            model_or_bin_t* mob = new model_or_bin_t();
+            memory_fence();
+            if(!mobs[pos]) mobs[pos] = mob;
+        }
+        return mobs[pos]->insert(key, val, Epsilon);
     }
 
     // ========================== remove =====================
@@ -217,7 +175,9 @@ public:
             } 
             return result_t::failed;
         }
-        return remove_model_or_bin(key, pos);
+        memory_fence();
+        if(mobs[pos]==nullptr) return result_t::failed;
+        return mobs[pos]->remove(key);
     }
 
     // ========================== scan ===================
@@ -227,124 +187,207 @@ public:
         size_t pos = 0;
         find_array(key, pos);
         while(remaining>0 && pos<=capacity) {
-            if(pos<capacity && keys[pos]>=key){
+            if(pos<capacity && valid_flag[pos] && keys[pos]>=key){
                 result.push_back(std::pair<key_t, val_t>(keys[pos], vals[pos]));
                 remaining--;
                 if(remaining<=0) break;
             }
-            if(mobs[pos]!=nullptr){
-                model_or_bin_t* mob = mobs[pos];
-                if(mob->isbin){
-                    remaining = mob->mob.lb->scan(key, remaining, result);
-                } else {
-                    remaining = mob->mob.ai->scan(key, remaining, result);
-                }
-            }
+            memory_fence();
+            if(mobs[pos]!=nullptr)
+                remaining = mobs[pos]->scan(key, remaining, result);
             pos++;
         }
         return remaining;
     }
 
+};
+
+template<class key_t, class val_t>
+class FineModel<key_t, val_t>::Model_or_bin
+{
 private:
-    inline size_t locate_in_levelbin(const key_t &key, const size_t pos)
-    {
-        // predict
-        //size_t index_pos = model->predict(key);
-        size_t index_pos = pos;
-        size_t upbound = capacity-1;
-        //index_pos = index_pos <= upbound? index_pos:upbound;
+    levelbin_type* lb;
+    std::vector<finemodel_type> models;
+    std::vector<key_t> model_keys;
 
-        // search
-        size_t begin, end, mid;
-        if(key > keys[index_pos]){
-            begin = index_pos+1 < upbound? (index_pos+1):upbound;
-            end = begin+maxErr < upbound? (begin+maxErr):upbound;
-        } else {
-            end = index_pos;
-            begin = end>maxErr? (end-maxErr):0;
-        }
+    bool volatile isbin = true;   // true = lb, false = ai
+    volatile uint8_t locked = 0;
+    size_t Epsilon;
 
-        assert(begin<=end);
-        while(begin != end){
-            mid = (end + begin+2) / 2;
-            if(keys[mid]<=key) {
-                begin = mid;
-            } else
-                end = mid-1;
-        }
-        return begin;
+    void lock(){
+        uint8_t unlocked = 0, locked = 1;
+        while (unlikely(cmpxchgb((uint8_t *)&this->locked, unlocked, locked) != unlocked))
+          ;
+    }
+    void unlock(){
+        locked = 0;
     }
 
-    result_t insert_model_or_bin(const key_t &key, const val_t &val, size_t bin_pos)
+public:
+    Model_or_bin() : lb(new levelbin_type()), isbin(true), models(), model_keys(), locked(0) {}
+
+    void print()
     {
-        //LOG(5)<<"insert key: "<<key<< ", into bin: "<<bin_pos;
-        // insert bin or model
-        model_or_bin_t *mob = mobs[bin_pos];
-        if(mob==nullptr){
-            mob = new model_or_bin_t();
-            mob->lock();
-            mob->mob.lb = new levelbin_type();
-            mob->isbin = true;
-            memory_fence();
-            if(mobs[bin_pos]){
-                delete mob;
-                return insert_model_or_bin(key, val, bin_pos);
-            }
-            mobs[bin_pos] = mob;
-        } else{
-            mob->lock();
+        if(isbin) lb->print(std::cout);
+        else {
+            for(int i=0; i<models.size(); i++) models[i].print();
         }
-        assert(mob!=nullptr);
-        assert(mob->locked == 1);
-        result_t res = result_t::failed;
-        if(mob->isbin) {           // insert into bin
-            res = mob->mob.lb->insert(key, val);
-            if(res == result_t::retrain){
-                //LOG(5)<<"[finemodel] Need Retrain: " << key;
-                // resort the data and train the model
-                std::vector<key_t> retrain_keys;
-                std::vector<val_t> retrain_vals;
-                mob->mob.lb->resort(retrain_keys, retrain_vals);
-                lrmodel_type model(0.0, 0.0, 0);
-                model.train(retrain_keys.begin(), retrain_keys.size());
-                finemodel_type *ai = new finemodel_type(model.get_slope(), model.get_intercept(), model.get_epsilon(),
-                                                        retrain_keys.begin(), retrain_vals.begin(), retrain_keys.size());
-                
-                memory_fence();
-                delete mob->mob.lb;
-                mob->mob.ai = ai;
-                mob->isbin = false;
-                res = ai->insert(key, val);
-                mob->unlock();
-                return res;
-            }
-        } else{                   // insert into model
-            res = mob->mob.ai->insert(key, val);
-        }
-        mob->unlock();
-        //print();
-        return res;
     }
 
-    result_t remove_model_or_bin(const key_t &key, const int bin_pos)
-    {
-        memory_fence();
-        model_or_bin_t* mob = mobs[bin_pos];
-        if(mob==nullptr) return result_t::failed;
+    void self_check(){
+        if(isbin) lb->self_check();
+        else {
+            for(int i=0; i<models.size(); i++) models[i].self_check();
+        }
+    }
 
+    result_t find(const key_t &key, val_t &val) {
+        lock();
         result_t res = result_t::failed;
-        mob->lock();
-        if(mob->isbin){
-            res = mob->mob.lb->remove(key);
+        if(isbin){
+            res = lb->find(key, val);
         } else{
-            res = mob->mob.ai->remove(key);
+            size_t model_pos = binary_search_branchless(&model_keys[0], model_keys.size(), key);
+            if(model_pos >= models.size())
+              model_pos = models.size()-1;
+            res = models[model_pos].find(key, val);
         }
         assert(res!=result_t::retrain);
-        mob->unlock();
+        unlock();
         return res;
     }
 
+    result_t insert(const key_t &key, const val_t &val, size_t epsilon) {
+        lock();
+        result_t res = result_t::failed;
+        if(isbin) {           // insert into bin
+            res = lb->insert(key, val);
+            if(res!=result_t::retrain) {
+                unlock();
+                return res;
+            }
+
+            //retrain
+            // resort the data and train the model
+            std::vector<key_t> retrain_keys;
+            std::vector<val_t> retrain_vals;
+            lb->resort(retrain_keys, retrain_vals);
+            retrain(retrain_keys, retrain_vals, epsilon);
+            
+            memory_fence();
+            delete lb;
+            isbin = false;
+        } 
+        // insert into model
+        size_t model_pos = binary_search_branchless(&model_keys[0], model_keys.size(), key);
+        if(model_pos >= models.size())
+          model_pos = models.size()-1;
+        res = models[model_pos].insert(key, val);
+        unlock();
+        return res;
+    }
+
+    result_t update(const key_t &key, const val_t &val)
+    {
+        lock();
+        result_t res = result_t::failed;
+        if(isbin){
+            res = lb->update(key, val);
+        } else{
+            size_t model_pos = binary_search_branchless(&model_keys[0], model_keys.size(), key);
+            if(model_pos >= models.size())
+              model_pos = models.size()-1;
+            res = models[model_pos].update(key, val);
+        }
+        assert(res!=result_t::retrain);
+        unlock();
+        return res;
+    }
+
+    result_t remove(const key_t &key)
+    {
+        lock();
+        result_t res = result_t::failed;
+        if(isbin){
+            res = lb->remove(key);
+        } else{
+            size_t model_pos = binary_search_branchless(&model_keys[0], model_keys.size(), key);
+            if(model_pos >= models.size())
+              model_pos = models.size()-1;
+            res = models[model_pos].remove(key);
+        }
+        assert(res!=result_t::retrain);
+        unlock();
+        return res;
+    }
+
+    int scan(const key_t &key, const size_t n, std::vector<std::pair<key_t, val_t>> &result)
+    {
+        size_t remaining = n;
+        lock();
+        if(isbin){
+            remaining = lb->scan(key, remaining, result);
+        } else {
+            size_t model_pos = binary_search_branchless(&model_keys[0], model_keys.size(), key);
+            if(model_pos >= models.size())
+              model_pos = models.size()-1;
+            remaining = models[model_pos].scan(key, remaining, result);
+        }
+        unlock();
+        return remaining;
+    }
+
+private:
+    void retrain(const std::vector<key_t> &keys, 
+               const std::vector<val_t> &vals, size_t epsilon)
+    {
+        assert(keys.size() == vals.size());
+        if(keys.size()==0) return;
+        this->Epsilon = epsilon;
+        //LOG(2) << "ReTraining data: "<<keys.size()<<", Epsilon: "<<Epsilon;
+
+        OptimalPLR* opt = new OptimalPLR(Epsilon-1);
+        key_t p = keys[0];
+        size_t pos=0;
+        opt->add_point(p, pos);
+        auto k_iter = keys.begin();
+        auto v_iter = vals.begin();
+        for(int i=1; i<keys.size(); i++) {
+          key_t next_p = keys[i];
+          if (next_p == p){
+            LOG(5)<<"DUPLICATE keys";
+            exit(0);
+          }
+          p = next_p;
+          pos++;
+          if(!opt->add_point(p, pos)) {
+            auto cs = opt->get_segment();
+            auto[cs_slope, cs_intercept] = cs.get_slope_intercept();
+            append_model(cs_slope, cs_intercept, Epsilon, k_iter, v_iter, pos);
+            k_iter += pos;
+            v_iter += pos;
+            pos=0;
+            opt = new OptimalPLR(Epsilon-1);
+            opt->add_point(p, pos);
+          }
+        }
+        auto cs = opt->get_segment();
+        auto[cs_slope, cs_intercept] = cs.get_slope_intercept();
+        append_model(cs_slope, cs_intercept, Epsilon, k_iter, v_iter, ++pos);
+        //LOG(2) << "ReTraining models: "<<models.size();
+    }
+
+    void append_model(double slope, double intercept, size_t epsilon,
+                      const typename std::vector<key_t>::const_iterator &keys_begin,
+                      const typename std::vector<val_t>::const_iterator &vals_begin, 
+                      size_t size)
+    {
+        models.emplace_back(slope, intercept, epsilon, keys_begin, vals_begin, size);
+        model_keys.push_back(models.back().get_lastkey());
+    }
+    
 };
+
 
 } //namespace findex
 

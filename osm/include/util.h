@@ -52,7 +52,7 @@
 #endif
 
 #define SUB_EPS(x, epsilon) ((x) <= (epsilon) ? 0 : ((x) - (epsilon)))
-#define ADD_EPS(x, epsilon, size) ((x) + (epsilon) + 2 >= (size) ? (size) : (x) + (epsilon) + 2)
+#define ADD_EPS(x, epsilon, size) ((x) + (epsilon) + 2 >= (size) ? (size-1) : (x) + (epsilon) + 2)
 
 struct ApproxPos {
     size_t pos; ///< The approximate position of the key.

@@ -25,8 +25,8 @@ struct config{
 	double insert_ratio = 1;
 	double update_ratio = 0;
 	double delete_ratio = 0;
-	size_t item_num  = 10;
-	size_t exist_num = 10;
+	size_t item_num  = 10000;
+	size_t exist_num = 1000;
 	size_t runtime = 10;
 	size_t thread_num = 1;
 	size_t benchmark = 0;  
